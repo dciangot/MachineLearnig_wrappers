@@ -71,11 +71,11 @@ if __name__ == "__main__":
 
 
     # Resize samples
-    df_sig_train = df_sig.head(9000)
-    df_sig_test = df_sig.tail(9000)
+    df_sig_train = df_sig.head(15000)
+    df_sig_test = df_sig.tail(3000)
 
-    df_bkg_train = df_bkg.head(9000)
-    df_bkg_test = df_bkg.tail(9000)
+    df_bkg_train = df_bkg.head(15000)
+    df_bkg_test = df_bkg.tail(3000)
 
     # define training and test dataframe
     df_train = df_make_sample(df_sig_train, df_bkg_train).sample(frac=1)
@@ -127,9 +127,13 @@ if __name__ == "__main__":
     y_test = y_test.values
 
     with tf.Session() as sess:
+        layers = 4
+        w_vector = [0 for _ in range(layers)]
 
-        def add_layer(inputs,input_dim,output_dim,activation=None,drop_out=False,keep_prob=0.5):
+        def add_layer(lay_n, inputs,input_dim,output_dim,activation=None,drop_out=False,keep_prob=0.5):
             Weights=tf.Variable(tf.random_normal([input_dim,output_dim]))
+            w_vector[lay_n-1] = Weights
+
             biases=tf.Variable(tf.zeros([1,output_dim])+0.1)
             Wx_plus_b=tf.matmul(inputs, Weights)+biases
             if activation ==None:
@@ -138,38 +142,51 @@ if __name__ == "__main__":
                 outputs = activation(Wx_plus_b)
             if drop_out:
                 outputs = tf.nn.dropout(outputs,keep_prob)
+
             return outputs
 
         xs=tf.placeholder(tf.float32,[None,11])
         ys=tf.placeholder(tf.float32,[None,])
 
         #Create graphic
-        layer1=add_layer(xs,11,30,activation=tf.tanh,drop_out=False)
-        layer2=add_layer(layer1,30,50,activation=tf.tanh,drop_out=True, keep_prob=0.9)
-        layer3=add_layer(layer2,50,50,activation=tf.tanh,drop_out=True, keep_prob=0.9)
-        layer4=add_layer(layer3,50,50,activation=tf.tanh,drop_out=True, keep_prob=0.9)
-        layer5=add_layer(layer4,50,30,activation=tf.tanh,drop_out=True, keep_prob=0.9)
-        prediction=add_layer(layer5,30,1,activation=tf.nn.sigmoid)
+        layer1=add_layer(1,xs,11,30,activation=tf.tanh,drop_out=False)
+        layer2=add_layer(2,layer1,30,100,activation=tf.tanh,drop_out=True, keep_prob=0.5)
+        layer3=add_layer(3,layer2,100,30,activation=tf.tanh,drop_out=True, keep_prob=0.5)
+        prediction=add_layer(4,layer3,30,1,activation=tf.nn.sigmoid)
 
         cross_entropy = tf.reduce_mean(-tf.reduce_sum(tf.expand_dims(ys,1)*tf.log(prediction+1e-5)+
                                                       (1-tf.expand_dims(ys,1))*tf.log(1-prediction+1e-5),
                                                       reduction_indices=[1]))
         #cross_entropy = tf.losses.log_loss(tf.expand_dims(ys,1),prediction,epsilon=1e-05)
 
-        train_step = tf.train.ProximalAdagradOptimizer(1e-1,l2_regularization_strength=0.001).minimize(cross_entropy)
-        train_step2 = tf.train.ProximalAdagradOptimizer(1e-3,l2_regularization_strength=0.0001).minimize(cross_entropy)
+        l2_reg_value = 0.01
+
+	cross_entropy = tf.reduce_mean(cross_entropy + l2_reg_value * (tf.nn.l2_loss(w_vector[0])+
+                                                                       tf.nn.l2_loss(w_vector[1])+
+                                                                       tf.nn.l2_loss(w_vector[2])+
+                                                                       tf.nn.l2_loss(w_vector[3])))
+
+        global_step = tf.Variable(0, trainable=False)
+        increment_global_step_op = tf.assign(global_step, global_step+1)
+        starter_learning_rate = 0.1
+        learning_rate = tf.train.exponential_decay(starter_learning_rate, global_step,
+                                                   10, 0.96, staircase=True)
+
+        #train_step = tf.train.ProximalAdagradOptimizer(1e-1).minimize(cross_entropy)
+        #train_step2 = tf.train.ProximalAdagradOptimizer(1e-3,l2_regularization_strength=0.0001).minimize(cross_entropy)
         #train_step = tf.train.AdamOptimizer(learning_rate=0.1).minimize(cross_entropy)
         #train_step = tf.train.AdamOptimizer(learning_rate=0.001).minimize(cross_entropy)
         #train_step = tf.train.ProximalAdagradOptimizer(1e-1,l2_regularization_strength=0.001).minimize(cross_entropy)
-        #train_step = tf.train.MomentumOptimizer(1e-2,0.3).minimize(cross_entropy)
+        train_step = tf.train.MomentumOptimizer(learning_rate,0.9).minimize(cross_entropy)
+        #train_step2 = tf.train.MomentumOptimizer(1e-3,0.9).minimize(cross_entropy)
         #train_step = tf.train.ProximalAdagradOptimizer(1e-4,l2_regularization_strength=0.01).minimize(cross_entropy)
         #train_step = tf.train.AdamOptimizer(1e-1).minimize(cross_entropy)
         #train_step = tf.train.RMSPropOptimizer(1e-3).minimize(cross_entropy)
 
         sess.run(tf.global_variables_initializer())
-        batches = np.split(x_train,900)
-        labels = np.split(y_train,900)
-        steps = 300
+        batches = np.split(x_train,500)
+        labels = np.split(y_train,500)
+        steps = 1000
 
         with sess.as_default():
             for i in range(steps):
@@ -178,21 +195,24 @@ if __name__ == "__main__":
                                               ys: batch[1]
                                               }
                                    )
-                if not i%100:
-                    print "Step", i, "out of", steps
-                    print "Cross_entropy:", cross_entropy.eval(feed_dict={xs: x_train, ys: y_train}), \
-                        cross_entropy.eval(feed_dict={xs: x_test, ys: y_test})
 
+                sess.run(increment_global_step_op)
+                if not i%10:
+                    print "Step", i, "out of", steps
+                    print "Cross_entropy:", learning_rate.eval(), cross_entropy.eval(feed_dict={xs: x_train, ys: y_train}), \
+                        cross_entropy.eval(feed_dict={xs: x_test, ys: y_test})
+            '''
             for i in range(steps):
                 for batch in zip(batches,labels):
                     train_step2.run(feed_dict={xs: batch[0],
                                                ys: batch[1]
                                                }
                                     )
-                if not i%100:
+                if not i%10:
+                    print "Step", i, "out of", steps
                     print "Cross_entropy2:", cross_entropy.eval(feed_dict={xs: x_train, ys: y_train}), \
                         cross_entropy.eval(feed_dict={xs: x_test, ys: y_test})
-
+            '''
             a = ys.eval(feed_dict={xs: x_test,
                            ys: y_test})
 
